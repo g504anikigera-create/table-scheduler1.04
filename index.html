@@ -651,7 +651,7 @@ function exportSchedule(){
 let ocrResults=[];
 
 // ▼▼▼ Cloudflare WorkerのURLをここに設定してください ▼▼▼
-const PROXY_URL = 'https://ocr-proxy.g504-aniki-gera.workers.dev/';
+const PROXY_URL = 'https://ocr-proxy.g504-aniki-gera.workers.dev';
 // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 const dropZone=document.getElementById('ocr-drop-zone');
@@ -666,15 +666,33 @@ function onFileSelect(e){
   const f=e.target.files[0];if(f)processOcrFile(f);
 }
 
+// 画像リサイズ（長辺maxPx以内のJPEGに変換してbase64返す）
+function resizeImage(dataUrl,maxPx,quality){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width,h=img.height;
+      if(w>maxPx||h>maxPx){
+        if(w>=h){h=Math.round(h*maxPx/w);w=maxPx;}
+        else{w=Math.round(w*maxPx/h);h=maxPx;}
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=w;canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      resolve(canvas.toDataURL('image/jpeg',quality).split(',')[1]);
+    };
+    img.onerror=reject;
+    img.src=dataUrl;
+  });
+}
+
 function processOcrFile(file){
   const preview=document.getElementById('ocr-preview');
   const status=document.getElementById('ocr-status');
   const resultList=document.getElementById('ocr-result-list');
-  const importRow=document.getElementById('ocr-import-row');
   const importBtn=document.getElementById('ocr-import-btn');
   const resetBtn=document.getElementById('ocr-reset-btn');
 
-  // プレビュー表示
   const reader=new FileReader();
   reader.onload=async ev=>{
     preview.src=ev.target.result;preview.style.display='block';
@@ -686,9 +704,11 @@ function processOcrFile(file){
     resetBtn.style.display='none';
     ocrResults=[];
 
-    // base64データ取得（data:...;base64, の後ろ）
-    const base64=ev.target.result.split(',')[1];
-    const mimeType=file.type||'image/jpeg';
+    // 長辺1500px以内にリサイズしてJPEGで送信（ペイロード削減）
+    let base64;
+    try{ base64=await resizeImage(ev.target.result,1500,0.85); }
+    catch(e){ base64=ev.target.result.split(',')[1]; }
+    const mimeType='image/jpeg';
 
     const prompt=`この画像は飲食店の予約表です。
 画像から予約情報を全て読み取り、以下のJSON配列形式で返してください。
@@ -731,12 +751,15 @@ function processOcrFile(file){
         })
       });
       const data=await resp.json();
-      if(data.error){throw new Error(data.error.message);}
+      // APIエラーチェック
+      if(data.error){throw new Error('APIエラー: '+JSON.stringify(data.error));}
+      if(!data.content||!data.content.length){throw new Error('APIレスポンス異常: '+JSON.stringify(data));}
       const raw=data.content.map(c=>c.text||'').join('');
-      // JSON部分だけ抽出
-      const match=raw.match(/\[[\s\S]*\]/);
-      if(!match)throw new Error('予約情報を解析できませんでした');
-      ocrResults=JSON.parse(match[0]);
+      console.log('OCR raw response:', raw);
+      // JSON部分だけ抽出（```json ... ``` も考慮）
+      const match=raw.match(/```json\s*([\s\S]*?)```/)||raw.match(/(\[[\s\S]*\])/);
+      if(!match)throw new Error('予約情報を解析できませんでした。APIの生レスポンス: '+raw.slice(0,200));
+      ocrResults=JSON.parse(match[1]||match[0]);
 
       if(!ocrResults.length){
         status.className='ocr-status error';
