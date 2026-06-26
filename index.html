@@ -756,10 +756,21 @@ function processOcrFile(file){
       if(!data.content||!data.content.length){throw new Error('APIレスポンス異常: '+JSON.stringify(data));}
       const raw=data.content.map(c=>c.text||'').join('');
       console.log('OCR raw response:', raw);
-      // JSON部分だけ抽出（```json ... ``` も考慮）
-      const match=raw.match(/```json\s*([\s\S]*?)```/)||raw.match(/(\[[\s\S]*\])/);
-      if(!match)throw new Error('予約情報を解析できませんでした。APIの生レスポンス: '+raw.slice(0,200));
-      ocrResults=JSON.parse(match[1]||match[0]);
+      // JSON抽出：```json...``` / ```...``` / 裸の [...] すべてに対応
+      let parsed=null;
+      const patterns=[
+        /```json\s*([\s\S]*?)```/,
+        /```\s*([\s\S]*?)```/,
+        /(\[[\s\S]*\])/
+      ];
+      for(const pat of patterns){
+        const m=raw.match(pat);
+        if(m){
+          try{parsed=JSON.parse((m[1]||m[0]).trim());break;}catch(e){}
+        }
+      }
+      if(!parsed)throw new Error('予約情報を解析できませんでした。APIの生レスポンス: '+raw.slice(0,200));
+      ocrResults=parsed;
 
       if(!ocrResults.length){
         status.className='ocr-status error';
